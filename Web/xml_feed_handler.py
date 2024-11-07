@@ -3,6 +3,7 @@ import random
 import string
 import xml.etree.ElementTree as et
 from datetime import datetime, timedelta
+from EAS2Text.EAS2Text import EAS2Text
 
 import dateutil.parser
 
@@ -12,10 +13,13 @@ from signxml import XMLSigner, methods
 
 # Google Cloud TTS shit
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./data/app.json"
-cert = open("cert.pem", "rb").read()
-key = open("key.pem", "rb").read()
+# Certificate Stuff
+certLocation = "./certs/certificate.pem"
+keyLocation = "./certs/private_key.pem"
+cert = open(certLocation, "rb").read()
+key = open(keyLocation, "rb").read()
 # UTC Offset
-offset = datetime.now(pytz.timezone("America/Chicago")).strftime("%z")
+offset = datetime.now(pytz.timezone("America/New_York")).strftime("%z")
 
 # def TTS(input, uid):
 
@@ -28,6 +32,16 @@ offset = datetime.now(pytz.timezone("America/Chicago")).strftime("%z")
 
 #     with open(f"media/{uid}.mp3", "wb") as output:
 #         output.write(request.audio_content)
+
+def get_event_dict():
+    events = EAS2Text(listMode=True).evntList
+
+    # Create the event_dict with reversed key-value pairs and remove 'a ' or 'an ' from the start
+    event_dict = {v.lstrip("a ").lstrip("an "): k for k, v in events.items()}
+
+    return event_dict
+
+        
 
 
 def prettify(element, indent="  "):
@@ -68,7 +82,7 @@ def addToIPAWSFeed(eventCode, stateCode, id):
 
     global time
     time = (
-        str(dateutil.parser.parse(datetime.utcnow().isoformat()))[:-3].replace(" ", "T")
+        str(dateutil.parser.parse(datetime.now().isoformat()))[:-3].replace(" ", "T")
         + "Z"
     )
 
@@ -100,7 +114,7 @@ def updateIPAWSTimestamp():
     xml_root = et.Element("feed", xmlns="http://www.w3.org/2005/Atom")
     et.SubElement(
         xml_root, "title", type="text"
-    ).text = "MISSINGTEXTURES SOFTWARE - CAP SERVER"
+    ).text = "NEWTON COMMUNICATIONS SOFTWARE - CAP SERVER"
     et.SubElement(xml_root, "updated").text = time
     et.SubElement(
         xml_root, "id"
@@ -118,48 +132,106 @@ def createCAPAlert(
     event: str,
     fips: str,
     description: str,
-    duration: str,
+    instruction: str,
+    # duration: str,
+    stnid: str,
+    easorg: str,
+    duration = None,
+    zczc = None,
+    startTime = None,
+    endTime = None,
     audio: bool = False,
     dev: bool = False,
     base64=None,
     pphrase: bytes = b"changeme",
 ):
-    # Time shit
-    sent = (
-        str(datetime.now().replace(microsecond=0).isoformat())[0:23].replace(" ", "T")
-        + offset[0:3]
-        + ":"
-        + offset[3:6]
-    )
+    
+    # Get the local timezone
+    local_tz = pytz.timezone('America/New_York')  # Adjust this to your local timezone
+
+    if zczc != "None" and zczc != None:
+        headerTranslation = EAS2Text(zczc, timeZoneTZ="America/New_York")
+
+        start_time = headerTranslation.startTime
+        end_time = headerTranslation.endTime
+
+        # Localize the datetime objects (if they are naive)
+        if start_time.tzinfo is None:
+            start_time_localized = local_tz.localize(start_time)
+        else:
+            start_time_localized = start_time.astimezone(local_tz)
+        
+        if end_time.tzinfo is None:
+            end_time_localized = local_tz.localize(end_time)
+        else:
+            end_time_localized = end_time.astimezone(local_tz)
+
+        # Convert to ISO 8601 format with timezone, excluding microseconds
+        start_time_iso = start_time_localized.strftime('%Y-%m-%dT%H:%M:%S%z')
+        end_time_iso = end_time_localized.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+        # Format the timezone offset to include a colon
+        start_time_iso = start_time_iso[:-2] + ':' + start_time_iso[-2:]
+        end_time_iso = end_time_iso[:-2] + ':' + end_time_iso[-2:]
+
+        sent = start_time_iso
+        expires = end_time_iso
+    else:
+        if startTime != None and startTime != "None":
+            start_time = dateutil.parser.parse(startTime)
+
+            if start_time.tzinfo is None:
+                start_time_localized = local_tz.localize(start_time)
+            else:
+                start_time_localized = start_time.astimezone(local_tz)
+            
+            start_time_iso = start_time_localized.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+            start_time_iso = start_time_iso[:-2] + ':' + start_time_iso[-2:]
+
+            sent = start_time_iso
+        else:
+            sent = (
+                str(datetime.now().replace(microsecond=0).isoformat())[0:23].replace(" ", "T")
+                + offset[0:3]
+                + ":"
+                + offset[3:6]
+            )
+        
+        if endTime != None and endTime != "None":
+            end_time = dateutil.parser.parse(endTime)
+
+            if end_time.tzinfo is None:
+                end_time_localized = local_tz.localize(end_time)
+            else:
+                end_time_localized = end_time.astimezone(local_tz)
+            
+            end_time_iso = end_time_localized.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+            end_time_iso = end_time_iso[:-2] + ':' + end_time_iso[-2:]
+
+            expires = end_time_iso
+        else:
+            if duration != None and duration != "None":
+                expires = cap_create_expire(duration)
+            else:
+                expires = cap_create_expire("0015")
+
+        
+    # # Time shit
+    # sent = (
+    #     str(datetime.now().replace(microsecond=0).isoformat())[0:23].replace(" ", "T")
+    #     + offset[0:3]
+    #     + ":"
+    #     + offset[3:6]
+    # )
 
     # FIPS
     locs = fips.split()
     loc_States = []
 
     # Events interperetation shit
-    event_dict = {
-        "Adminstrative Message": "ADR",
-        "Avalanche Watch": "AVA",
-        "Avalanche Warning": "AVW",
-        "Blue Alert": "BLU",
-        "Child Abduction Emergency": "CAE",
-        "Civil Danger Warning": "CDW",
-        "Civil Emergency Message": "CEM",
-        "Practice/Demo Warning": "DMO",
-        "Earthquake Warning": "EQW",
-        "Immediate Evacuation": "EVI",
-        "Fire Warning": "FRW",
-        "Hazardous Materials Warning": "HMW",
-        "Local Area Emergency": "LAE",
-        "Law Enforcement Warning": "LEW",
-        "Nuclear Power Plant Warning": "NUW",
-        "Radiological Hazard Warning": "RHW",
-        "Required Monthly Test": "RMT",
-        "Required Weekly Test": "RWT",
-        "Shelter in Place Warning": "SPW",
-        "911 Telephone Outage Emergency": "TOE",
-        "Volcano Warning": "VOW",
-    }
+    event_dict = get_event_dict()
 
     event_code = event_dict.get(event)
     if event_code == None:
@@ -167,7 +239,7 @@ def createCAPAlert(
         event_code = event_dict.get(event)
 
     # CAP unique ID
-    uid = "MSNGTXTRS-" + "".join(
+    uid = "NEWTONCOMM-" + "".join(
         random.choices(string.ascii_uppercase + string.digits, k=8)
     )
 
@@ -199,16 +271,52 @@ def createCAPAlert(
     et.SubElement(eventCode, "value").text = event_code
 
     # Expiration
-    et.SubElement(info, "expires").text = cap_create_expire(duration)
-    et.SubElement(info, "description").text = description
+    et.SubElement(info, "expires").text = expires
+    if description != None and description != "None":    
+        et.SubElement(info, "description").text = description
+    if instruction != None and instruction != "None":
+        et.SubElement(info, "instruction").text = instruction
 
     # Parameters
-    parameter1 = et.SubElement(info, "parameter")
-    et.SubElement(parameter1, "valueName").text = "EAS-ORG"
-    et.SubElement(parameter1, "value").text = "EAS"
+    if easorg != None and easorg != "None":
+        parameter1 = et.SubElement(info, "parameter")
+        et.SubElement(parameter1, "valueName").text = "EAS-ORG"
+        et.SubElement(parameter1, "value").text = easorg
+    else:
+        parameter1 = et.SubElement(info, "parameter")
+        et.SubElement(parameter1, "valueName").text = "EAS-ORG"
+        et.SubElement(parameter1, "value").text = "EAS"
     parameter2 = et.SubElement(info, "parameter")
     et.SubElement(parameter2, "valueName").text = "timezone"
-    et.SubElement(parameter2, "value").text = "CDT"
+    et.SubElement(parameter2, "value").text = "EST"
+    if stnid != None and stnid != "None":
+        parameter3 = et.SubElement(info, "parameter")
+        et.SubElement(parameter3, "valueName").text = "EAS-STN-ID"
+        et.SubElement(parameter3, "value").text = stnid
+    else:
+        parameter3 = et.SubElement(info, "parameter")
+        et.SubElement(parameter3, "valueName").text = "EAS-STN-ID"
+        et.SubElement(parameter3, "value").text = "SRG/CAP"
+
+    dt = datetime.fromisoformat(sent)
+
+    dt_utc = dt.astimezone(timezone.utc)
+
+    julian_day = f"{dt_utc.timetuple().tm_yday:03}"
+
+    time_utc = dt_utc.strftime("%H%M")
+
+    uid2 = f"{julian_day}{time_utc}"
+
+    for f in os.listdir("Web/alerts/"):
+        if os.path.isfile(os.path.join("Web/alerts/", f)):
+            if uid2 in f:
+                uid2 = f"{julian_day}{time_utc}{random.randint(0, 9)}"
+
+    parameter4 = et.SubElement(info, "parameter")
+    et.SubElement(parameter4, "valueName").text = "EAS-UID"
+    et.SubElement(parameter4, "value").text = uid2
+    
 
     # Resource
     if audio == True:
@@ -217,12 +325,12 @@ def createCAPAlert(
         et.SubElement(resource, "mimeType").text = "audio/x-ipaws-audio-mp3"
         et.SubElement(
             resource, "uri"
-        ).text = f"https://s3.amazonaws.com/ipawstestbucket/MediaCloud/HSEMDemo.mp3"
+        ).text = f"https://matra.site/cdn/media/IPAWSTest-EB-UF.mp3"
     elif audio == False and base64 != None:
         resource = et.SubElement(info, "resource")
         et.SubElement(resource, "resourceDesc").text = "EAS Broadcast Content"
         et.SubElement(resource, "mimeType").text = "audio/x-ipaws-audio-mp3"
-        et.SubElement(resource, "derefUri").text = base64
+        et.SubElement(resource, "uri").text = base64
 
     xml_root.append(info)
 
@@ -242,29 +350,28 @@ def createCAPAlert(
         )
     )
 
-    xml_root = XMLSigner(method=methods.enveloped).sign(
-        xml_root,
+    # Step 1: Convert `xml_root` to a string without the XML declaration
+    xml_string = et.tostring(xml_root, encoding='utf-8', method='xml', xml_declaration=False).decode('utf-8')
+
+    # Step 2: Parse the string back to an element without the XML declaration
+    xml_root_no_header = et.fromstring(xml_string)
+
+    # # Step 3: Sign the XML without the XML declaration
+    signed_xml = XMLSigner(method=methods.enveloped).sign(
+        xml_root_no_header,
         key=key,
         cert=cert,
-        passphrase=pphrase,
+        #passphrase=pphrase,
     )
-    # prettify(xml_root)
 
-    # Push to the web server
-    xml = et.ElementTree(xml_root)
+    # Now, signed_xml is the signed XML element without the XML header
+    # If you need to save it to a file:
+    xml = et.ElementTree(signed_xml)
 
-    xml.write(f"api.xml", encoding="UTF-8", xml_declaration=True, default_namespace="")
+    xml.write(f"api.xml", encoding="UTF-8", xml_declaration=False)
 
     if dev == False:
-        hrm = False
-        while hrm == False:
-            uid2 = "".join(random.choices(string.digits, k=7))
-            if uid2 not in [
-                f
-                for f in os.listdir("Web/alerts/")
-                if os.path.isfile(os.path.join("Web/alerts/", f))
-            ]:
-                hrm = True
+
         os.system(f"cp api.xml Web/alerts/{uid2}")
         addToIPAWSFeed(event_code, loc_States, uid2)
         updateIPAWSTimestamp()

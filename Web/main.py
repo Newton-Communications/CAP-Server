@@ -13,8 +13,12 @@ from werkzeug.utils import redirect
 
 from . import xml_feed_handler as XFH
 
-cogs = []  # Provide example "COG-IDs" here
+from EAS2Text.EAS2Text import EAS2Text
+
+senderkeys = [] # Provide Sender Header Keys here
+
 pins = []  # Provide PINS here.
+
 main = Blueprint("main", __name__)
 
 
@@ -39,7 +43,7 @@ def redToCap():
 @main.route("/media/<path:filename>", methods=["GET"])
 def download(filename):
     try:
-        return send_from_directory(directory="media", path=filename)
+        return send_from_directory(os.path.join(os.getcwd(), 'media'), path=filename)
     except Exception as E:
         return make_response(f"System Errror: {str(E)}", 500)
 
@@ -92,18 +96,42 @@ def IPAWSUPDATE():
         return make_response(f"System Errror: {str(E)}", 500)
 
 
-@main.route("/CAP", methods=["GET"])
+@main.route("/IPAWSOPEN_EAS_SERVICE/rest/eas/recent", methods=["GET"])
+def RECENTSERV():
+    env = request.args.get("env")
+    try:
+        if request.args.get("pin") != None:
+            if request.args.get("pin") in pins:
+                with open("CAP/recent.xml", "r") as f:
+                    resp = f.read()
+                    return Response(resp, mimetype="text/xml")
+            else:
+                return make_response("Invalid PIN", 403)
+        else:
+            return make_response("Required String parameter 'pin' is not present", 400)
+    except FileNotFoundError:
+        return abort(404)
+    except Exception as E:
+        return make_response(f"System Errror: {str(E)}", 500)
+    
+@main.route("/IPAWSOPEN_EAS_SERVICE/rest/public/xml", methods=["GET"])
 def CAPSERV():
     env = request.args.get("env")
     try:
-        if env == "dev":
-            with open("CAP/dev/alerts.xml", "r") as f:
-                resp = f.read()
-                return Response(resp, mimetype="text/xml")
+        if request.args.get("pin") != None:
+            if request.args.get("pin") in pins:
+                if env == "dev":
+                    with open("CAP/dev/alerts.xml", "r") as f:
+                        resp = f.read()
+                        return Response(resp, mimetype="text/xml")
+                else:
+                    with open("CAP/alerts.xml", "r") as f:
+                        resp = f.read()
+                        return Response(resp, mimetype="text/xml")
+            else:
+                return make_response("Invalid PIN", 403)
         else:
-            with open("CAP/alerts.xml", "r") as f:
-                resp = f.read()
-                return Response(resp, mimetype="text/xml")
+            return make_response("Required String parameter 'pin' is not present", 400)
     except FileNotFoundError:
         return abort(404)
     except Exception as E:
@@ -114,115 +142,164 @@ def CAPSERV():
 def CAPAPI():
     try:
         if request.headers["CogID"] in cogs:
-            event = request.json["event"]
+            if request.headers["AuthKey"] in senderkeys:
+                event = request.json["event"]
 
-            # Events interperetation shit
-            event_dict = {
-                "Adminstrative Message": "ADR",
-                "Avalanche Watch": "AVA",
-                "Avalanche Warning": "AVW",
-                "Blue Alert": "BLU",
-                "Child Abduction Emergency": "CAE",
-                "Civil Danger Warning": "CDW",
-                "Civil Emergency Message": "CEM",
-                "Practice/Demo Warning": "DMO",
-                "Earthquake Warning": "EQW",
-                "Immediate Evacuation": "EVI",
-                "Fire Warning": "FRW",
-                "Hazardous Materials Warning": "HMW",
-                "Local Area Emergency": "LAE",
-                "Law Enforcement Warning": "LEW",
-                "Nuclear Power Plant Warning": "NUW",
-                "Radiological Hazard Warning": "RHW",
-                "Required Monthly Test": "RMT",
-                "Required Weekly Test": "RWT",
-                "Shelter in Place Warning": "SPW",
-                "911 Telephone Outage Emergency": "TOE",
-                "Volcano Warning": "VOW",
-            }
+                events = EAS2Text(listMode=True).evntList
 
-            event_code = event_dict.get(event)
-            if event_code == None:
-                event = list(event_dict.keys())[list(event_dict.values()).index(event)]
+                # Create the event_dict with reversed key-value pairs and remove 'a ' or 'an ' from the start
+                event_dict = {v.lstrip("a ").lstrip("an "): k for k, v in events.items()}
+                
                 event_code = event_dict.get(event)
+                if event_code == None:
+                    event = list(event_dict.keys())[list(event_dict.values()).index(event)]
+                    event_code = event_dict.get(event)
 
-            if not event and not event_code:
-                return make_response(
-                    f"Event Code is Invalid. Valid event codes are {', '.join(list(event_dict.keys())[:-1])}, and {list(event_dict.keys())[-1:][0]}",
-                    422,
-                )
-            else:
-                env = request.json["env"]
-
-                try:
-                    if request.json["audio"] == "True":
-                        audio_exists = True
-                    elif request.json["audio"] == "False":
-                        audio_exists = False
-                except KeyError:
-                    audio_exists = False
-
-                try:
-                    if request.json["base64"] != None:
-                        b64Aud = request.json["base64"]
-                    else:
-                        b64Aud = None
-                except KeyError:
-                    b64Aud = None
-
-                try:
-                    if request.json["description"] != None:
-                        description = request.json["description"]
-                    else:
-                        description = "None"
-                except:
-                    description = None
-
-                area = request.json["area"]
-                duration = request.json["duration"]
-
-                if "dev" in env and not "live" in env:
-                    XFH.createCAPAlert(
-                        event,
-                        area,
-                        description,
-                        duration,
-                        audio=audio_exists,
-                        dev=True,
-                        base64=b64Aud,
-                    )
-                else:
-                    XFH.createCAPAlert(
-                        event,
-                        area,
-                        description,
-                        duration,
-                        audio=audio_exists,
-                        dev=False,
-                        base64=b64Aud,
-                    )
-
-                if "live" in env and not "dev" in env:
-                    with open("api.xml", "r") as f:
-                        resp = f.read()
-                        os.system("cp api.xml CAP/alerts.xml")
-                        return Response(resp, mimetype="text/xml")
-                elif "live" in env and "dev" in env:
-                    with open("api.xml", "r") as f:
-                        resp = f.read()
-                        os.system("cp api.xml CAP/alerts.xml")
-                        os.system("cp api.xml CAP/dev/alerts.xml")
-                        return Response(resp, mimetype="text/xml")
-                elif "live" not in env and "dev" in env:
-                    with open("api.xml", "r") as f:
-                        resp = f.read()
-                        os.system("cp api.xml CAP/dev/alerts.xml")
-                        return Response(resp, mimetype="text/xml")
-                else:
+                if not event and not event_code:
                     return make_response(
-                        "Environment not specified, please use 'live', 'dev', or both.",
-                        400,
+                        f"Event Code is Invalid. Valid event codes are {', '.join(list(event_dict.keys())[:-1])}, and {list(event_dict.keys())[-1:][0]}",
+                        422,
                     )
+                else:
+                    env = request.json["env"]
+
+                    try:
+                        if request.json["audio"] == "True":
+                            audio_exists = True
+                        elif request.json["audio"] == "False":
+                            audio_exists = False
+                    except KeyError:
+                        audio_exists = False
+
+                    try:
+                        if request.json["base64"] != None:
+                            b64Aud = request.json["base64"]
+                        else:
+                            b64Aud = None
+                    except KeyError:
+                        b64Aud = None
+
+
+                    try:
+                        if request.json["description"] != None:
+                            description = request.json["description"]
+                        else:
+                            description = None
+                    except:
+                        description = None
+                    
+                    try:
+                        if request.json["instruction"] != None:
+                            instruction = request.json["instruction"]
+                        else:
+                            instruction = None
+                    except:
+                        instruction = None
+
+                    try:
+                        if request.json["easorg"] != None:
+                            easorg = request.json["easorg"]
+                        else:
+                            easorg = None
+                    except:
+                        easorg = None
+
+                    try:
+                        if request.json["stnid"] != None:
+                            if len(request.json["stnid"]) > 8:
+                                stnid = request.json["stnid"][:8]
+                            else:
+                                stnid = request.json["stnid"]
+                        else:
+                            stnid = "None"
+                    except:
+                        stnid = None
+
+                    area = request.json["area"]
+                    duration = request.json["duration"]
+
+                    try:
+                        if request.json["zczc"] != None:
+                            zczc = request.json["zczc"]
+                        else:
+                            zczc = "None"
+                    except:
+                        zczc = None
+
+                    try:
+                        if request.json["startTime"] != None:
+                            startTime = request.json["startTime"]
+                        else:
+                            startTime = "None"
+                    except:
+                        startTime = None
+
+                    try:
+                        if request.json["endTime"] != None:
+                            endTime = request.json["endTime"]
+                        else:
+                            endTime = "None"
+                    except:
+                        endTime = None    
+
+                    if "dev" in env and not "live" in env:
+                        XFH.createCAPAlert(
+                            event,
+                            area,
+                            description,
+                            instruction,
+                            # duration,
+                            stnid,
+                            easorg,
+                            duration=duration,
+                            zczc=zczc,
+                            startTime=startTime,
+                            endTime=endTime,
+                            audio=audio_exists,
+                            dev=True,
+                            base64=b64Aud,
+                        )
+                    else:
+                        XFH.createCAPAlert(
+                            event,
+                            area,
+                            description,
+                            instruction,
+                            # duration,
+                            stnid,
+                            easorg,
+                            duration=duration,
+                            zczc=zczc,
+                            startTime=startTime,
+                            endTime=endTime,
+                            audio=audio_exists,
+                            dev=False,
+                            base64=b64Aud,
+                        )
+
+                    if "live" in env and not "dev" in env:
+                        with open("api.xml", "r") as f:
+                            resp = f.read()
+                            os.system("cp api.xml CAP/alerts.xml")
+                            return Response(resp, mimetype="text/xml")
+                    elif "live" in env and "dev" in env:
+                        with open("api.xml", "r") as f:
+                            resp = f.read()
+                            os.system("cp api.xml CAP/alerts.xml")
+                            os.system("cp api.xml CAP/dev/alerts.xml")
+                            return Response(resp, mimetype="text/xml")
+                    elif "live" not in env and "dev" in env:
+                        with open("api.xml", "r") as f:
+                            resp = f.read()
+                            os.system("cp api.xml CAP/dev/alerts.xml")
+                            return Response(resp, mimetype="text/xml")
+                    else:
+                        return make_response(
+                            "Environment not specified, please use 'live', 'dev', or both.",
+                            400,
+                        )
+            else:
+                return make_response("Invalid KEY", 403)
         else:
             return make_response("Invalid KEY", 403)
     except Exception as E:
